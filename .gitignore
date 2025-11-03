@@ -1,0 +1,12 @@
+# Ignore dataset directories
+afhq/
+pets_facial_expression_dataset/
+
+# Ignore development files
+.idea/
+.DS_Store
+__pycache__/
+*.pyc
+
+# Keep the model file
+!efficientNetB5_pet_emotion_model.h5
