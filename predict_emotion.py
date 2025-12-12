@@ -30,7 +30,7 @@ def predict_pet_emotion(image_path, model_path='efficientnet_pet_emotion_proper.
         predicted_class_index = np.argmax(prediction)
 
         # Class labels (based on the dataset structure, sorted alphabetically)
-        class_labels = ['Angry', 'happy', 'Other', 'Sad']
+        class_labels = ['Angry', 'Other', 'Sad', 'happy']
 
         predicted_class_label = class_labels[predicted_class_index]
         confidence = prediction[0][predicted_class_index] * 100

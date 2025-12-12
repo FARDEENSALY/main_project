@@ -19,11 +19,28 @@ class RealTimePetEmotionRecognition:
 
         # Class labels (adjust based on your dataset, sorted alphabetically)
         # These should match the training data classes
-        self.class_labels = ['Angry', 'happy', 'Other', 'Sad']
+        self.class_labels = ['Angry', 'Other', 'Sad', 'happy']
 
-        # Initialize face detector (you can use pet-specific detector if available)
-        # For now, using Haar cascades for general face detection
-        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        # Initialize face detectors for both human and pet faces
+        self.face_cascades = []
+        # Human face detector
+        human_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        if not human_cascade.empty():
+            self.face_cascades.append(('human', human_cascade))
+            print("✅ Human face cascade loaded")
+        else:
+            print("⚠️  Human face cascade not found")
+
+        # Pet face detectors (cat face cascade is available in OpenCV)
+        cat_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalcatface.xml')
+        if not cat_cascade.empty():
+            self.face_cascades.append(('cat', cat_cascade))
+            print("✅ Cat face cascade loaded")
+        else:
+            print("⚠️  Cat face cascade not found")
+
+        if not self.face_cascades:
+            print("❌ No face cascades loaded! Face detection will not work.")
 
         # Parameters - match training input size
         self.target_size = (300, 300)
@@ -110,17 +127,36 @@ class RealTimePetEmotionRecognition:
             return "Error", 0.0
 
     def detect_faces(self, frame):
-        """Detect faces in the frame using multiple scales for better pet detection"""
+        """Detect faces in the frame using multiple cascades for better pet detection"""
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # Try different parameters for better pet face detection
-        faces = []
-        # Standard detection
-        faces.extend(self.face_cascade.detectMultiScale(gray, 1.1, 4))
-        # More sensitive detection for smaller faces
-        faces.extend(self.face_cascade.detectMultiScale(gray, 1.2, 3))
-        # Less sensitive for larger faces
-        faces.extend(self.face_cascade.detectMultiScale(gray, 1.05, 5))
+        all_faces = []
+
+        # Try each cascade with different parameters
+        for cascade_name, cascade in self.face_cascades:
+            # Different scale factors and min neighbors for better detection
+            scale_factors = [1.05, 1.1, 1.2, 1.3]  # More conservative scaling
+            min_neighbors_list = [3, 4, 5]  # Fewer false positives
+
+            for scale_factor in scale_factors:
+                for min_neighbors in min_neighbors_list:
+                    try:
+                        detected_faces = cascade.detectMultiScale(
+                            gray,
+                            scaleFactor=scale_factor,
+                            minNeighbors=min_neighbors,
+                            minSize=(30, 30),  # Minimum face size
+                            maxSize=(300, 300)  # Maximum face size
+                        )
+                        if len(detected_faces) > 0:
+                            # Add cascade name for debugging
+                            faces_with_label = [(x, y, w, h, cascade_name) for x, y, w, h in detected_faces]
+                            all_faces.extend(faces_with_label)
+                    except Exception as e:
+                        print(f"Error with {cascade_name} cascade: {e}")
+
+        # Extract just the bounding boxes for processing
+        faces = [(x, y, w, h) for x, y, w, h, _ in all_faces] if all_faces else []
 
         # Remove duplicates (overlapping detections)
         if faces:
