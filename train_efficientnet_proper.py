@@ -73,7 +73,7 @@ print(f"Validation: {len(valid_df)} images")
 print(f"Testing: {len(test_df)} images")
 
 # Create Image Data Generator
-batch_size = 8
+batch_size = 32
 img_size = (300, 300)
 channels = 3
 img_shape = (img_size[0], img_size[1], channels)
@@ -161,6 +161,33 @@ early_stopping = EarlyStopping(monitor='val_accuracy',
                                restore_best_weights=True,
                                mode='max')
 
+# Custom callback to print metrics after each epoch
+class PrintMetricsCallback(tf.keras.callbacks.Callback):
+    def __init__(self, test_gen, train_gen):
+        super().__init__()
+        self.test_gen = test_gen
+        self.train_gen = train_gen
+
+    def on_epoch_end(self, epoch, logs=None):
+        # Training metrics from logs
+        train_acc = logs.get('accuracy')
+        train_loss = logs.get('loss')
+
+        # Validation metrics from logs
+        val_acc = logs.get('val_accuracy')
+        val_loss = logs.get('val_loss')
+
+        # Evaluate on test set
+        test_score = self.model.evaluate(self.test_gen, verbose=0)
+        test_loss = test_score[0]
+        test_acc = test_score[1]
+
+        # Print all metrics
+        print(f"\nEpoch {epoch+1}:")
+        print(f"  Training Loss: {train_loss:.4f}, Training Accuracy: {train_acc:.4f}")
+        print(f"  Validation Loss: {val_loss:.4f}, Validation Accuracy: {val_acc:.4f}")
+        print(f"  Testing Loss: {test_loss:.4f}, Testing Accuracy: {test_acc:.4f}")
+
 # Learning rate scheduler for phase 1
 def lr_schedule_phase1(epoch):
     lr = 0.001
@@ -192,13 +219,21 @@ callbacks_phase1 = [early_stopping, lr_scheduler_phase1]
 callbacks_phase2 = [early_stopping, lr_scheduler_phase2]
 callbacks_phase3 = [early_stopping, lr_scheduler_phase3]
 
+# Instantiate the print callback
+print_callback = PrintMetricsCallback(test_gen, train_gen)
+
+# Add the callback to all phases
+callbacks_phase1.append(print_callback)
+callbacks_phase2.append(print_callback)
+callbacks_phase3.append(print_callback)
+
 # Three-phase training: Phase 1 - Train top layers, Phase 2 - Fine-tune base model, Phase 3 - Full fine-tuning
 
 # Phase 1: Train top layers with frozen base model
 print("🚀 Phase 1: Training top layers (30 epochs)...")
 print("Base model is frozen, training only the classification head...")
 
-epochs_phase1 = 30
+epochs_phase1 = 50
 history_phase1 = model.fit(x=train_gen,
                           epochs=epochs_phase1,
                           verbose=1,
@@ -223,7 +258,7 @@ model.compile(Adamax(learning_rate=1e-5), loss='categorical_crossentropy', metri
 
 print("Model recompiled for fine-tuning with lower learning rate.")
 
-epochs_phase2 = 70  # Total remaining epochs
+epochs_phase2 = 90  # Total remaining epochs
 history_phase2 = model.fit(x=train_gen,
                           epochs=epochs_phase2,
                           verbose=1,
@@ -246,7 +281,7 @@ model.compile(Adamax(learning_rate=1e-6), loss='categorical_crossentropy', metri
 
 print("Model recompiled for full fine-tuning with very low learning rate.")
 
-epochs_phase3 = 20  # Limited epochs to avoid overfitting
+epochs_phase3 = 30  # Limited epochs to avoid overfitting
 history_phase3 = model.fit(x=train_gen,
                           epochs=epochs_phase3,
                           verbose=1,

@@ -1,22 +1,10 @@
-# TODO: Improve Pet Detection in Real-Time Recognition
+# TODO: Add Metrics Printing After Each Epoch
 
-## Tasks:
-- [x] Update `__init__` method to load pet-specific Haar cascades (e.g., haarcascade_frontalcatface.xml)
-- [x] Modify `detect_faces` method to use multiple cascades (human and cat) for better pet detection
-- [x] Adjust detection parameters (scale factors, min neighbors) for pet faces
-- [x] Add logging when face detection fails to indicate fallback to whole-frame prediction
-- [x] Test the updated real-time recognition with sample inputs
+## Completed Tasks
+- [x] Create custom `PrintMetricsCallback` class to print training accuracy, training loss, testing accuracy, testing loss, validation accuracy, and validation loss after each epoch.
+- [x] Instantiate the callback with `test_gen` and `train_gen`.
+- [x] Add the callback to `callbacks_phase1`, `callbacks_phase2`, and `callbacks_phase3` to ensure it runs during all training phases.
 
-## Status: Complete
-
-## Summary of Changes:
-- Modified `realtime_emotion_recognition.py` to load both human and cat face Haar cascades
-- Updated `detect_faces` method to try multiple cascades with various parameters for better pet detection
-- Added proper error handling and logging for cascade loading
-- Improved detection parameters with conservative scaling and size limits
-- The script is now running and should detect pets better than before
-
-## Next Steps:
-- Monitor the running script for cascade loading messages
-- Test with actual pet images/videos to verify improved detection
-- If detection still fails, consider implementing more advanced detectors (e.g., DNN-based)
+## Followup Steps
+- [ ] Run the `train_efficientnet_proper.py` script to verify that the metrics are printed correctly after each epoch in all phases.
+- [ ] Check the output to ensure training accuracy, training loss, testing accuracy, testing loss, validation accuracy, and validation loss are displayed as expected.
