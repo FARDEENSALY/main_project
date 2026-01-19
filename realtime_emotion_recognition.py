@@ -6,319 +6,117 @@ from tensorflow.keras.applications.efficientnet import preprocess_input
 import time
 
 class RealTimePetEmotionRecognition:
-    def __init__(self, model_path='efficientnet_pet_emotion_proper.h5'):
-        """Initialize the real-time emotion recognition system"""
-        print("Loading model...")
+    def __init__(self, model_path='400epoch_train.h5'):
+        print("--- Initializing System ---")
         try:
-            self.model = load_model(model_path)
+            # Load model with compile=False to avoid custom layer errors
+            self.model = load_model(model_path, compile=False)
             print("✅ Model loaded successfully!")
         except Exception as e:
             print(f"❌ Error loading model: {e}")
             self.model = None
             return
 
-        # Class labels (adjust based on your dataset, sorted alphabetically)
-        # These should match the training data classes
-        self.class_labels = ['Angry', 'Other', 'Sad', 'happy']
+        # IMPORTANT: Keras sorts classes alphabetically. 
+        # ['Angry', 'Other', 'Sad', 'happy'] -> 'Other' usually comes after 'Angry'
+        # Double check your training folder names!
+        self.class_labels = ['Angry', 'happy', 'Other', 'Sad']
 
-        # Initialize face detectors for both human and pet faces
-        self.face_cascades = []
-        # Human face detector
-        human_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-        if not human_cascade.empty():
-            self.face_cascades.append(('human', human_cascade))
-            print("✅ Human face cascade loaded")
-        else:
-            print("⚠️  Human face cascade not found")
+        # Detectors
+        self.face_cascades = [
+            ('cat', cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalcatface.xml')),
+            ('human', cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'))
+        ]
 
-        # Pet face detectors (cat face cascade is available in OpenCV)
-        cat_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalcatface.xml')
-        if not cat_cascade.empty():
-            self.face_cascades.append(('cat', cat_cascade))
-            print("✅ Cat face cascade loaded")
-        else:
-            print("⚠️  Cat face cascade not found")
-
-        if not self.face_cascades:
-            print("❌ No face cascades loaded! Face detection will not work.")
-
-        # Parameters - match training input size
-        self.target_size = (300, 300)
-        self.confidence_threshold = 0.7  # Increased threshold for better accuracy
-        self.frame_skip = 5  # Process every 5th frame for stability
+        # Config
+        self.target_size = (224, 224)
+        self.confidence_threshold = 0.5 
+        self.frame_skip = 2 # Reduced for smoother real-time feel
         self.frame_count = 0
+        
+        # Tracking for smoothing
+        self.last_emotion = "Searching..."
+        self.last_confidence = 0.0
+        self.last_faces = []
 
-        # Prediction smoothing
-        self.prediction_history = []
-        self.history_size = 10  # Keep last 10 predictions for smoothing
-        self.min_confidence = 0.3  # Minimum confidence to consider prediction
+    def preprocess_roi(self, roi):
+        """Processes the cropped face area specifically"""
+        # Convert BGR to RGB
+        img = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
+        # Resize using INTER_AREA for better quality downsampling
+        img = cv2.resize(img, self.target_size, interpolation=cv2.INTER_AREA)
+        img_array = np.expand_dims(img, axis=0)
+        # EfficientNet specific normalization
+        return preprocess_input(img_array)
 
-        print("🎥 Real-time pet emotion recognition initialized!")
-        print("Press 'q' to quit, 'c' to capture screenshot")
-
-    def preprocess_frame(self, frame):
-        """Preprocess frame for model prediction"""
-        # Convert to RGB (OpenCV uses BGR)
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-        # Resize to model input size
-        frame_resized = cv2.resize(frame_rgb, self.target_size)
-
-        # Convert to array and preprocess
-        frame_array = np.expand_dims(frame_resized, axis=0)
-        frame_preprocessed = preprocess_input(frame_array)
-
-        return frame_preprocessed
-
-    def smooth_prediction(self, emotion, confidence):
-        """Smooth predictions using history"""
-        if confidence < self.min_confidence:
-            # If confidence is too low, return the most common recent prediction
-            if self.prediction_history:
-                # Count occurrences of each emotion in history
-                emotion_counts = {}
-                for hist_emotion, _ in self.prediction_history[-5:]:  # Last 5 predictions
-                    emotion_counts[hist_emotion] = emotion_counts.get(hist_emotion, 0) + 1
-
-                # Return most common emotion if it appears more than once
-                most_common = max(emotion_counts.items(), key=lambda x: x[1])
-                if most_common[1] > 1:
-                    return most_common[0], 0.5  # Return with moderate confidence
-            return emotion, confidence
-
-        # Add current prediction to history
-        self.prediction_history.append((emotion, confidence))
-
-        # Keep only recent history
-        if len(self.prediction_history) > self.history_size:
-            self.prediction_history.pop(0)
-
-        # If we have enough history, check for consistency
-        if len(self.prediction_history) >= 3:
-            recent_emotions = [e for e, c in self.prediction_history[-3:]]
-            # If last 3 predictions are the same, boost confidence
-            if len(set(recent_emotions)) == 1:
-                return emotion, min(confidence + 0.2, 0.95)
-
-        return emotion, confidence
-
-    def predict_emotion(self, frame):
-        """Predict emotion from frame"""
-        if self.model is None:
-            return "Model not loaded", 0.0
-
-        try:
-            preprocessed = self.preprocess_frame(frame)
-            predictions = self.model.predict(preprocessed, verbose=0)
-            predicted_class_idx = np.argmax(predictions[0])
-            confidence = predictions[0][predicted_class_idx]
-
-            predicted_label = self.class_labels[predicted_class_idx]
-
-            # Apply smoothing
-            smoothed_emotion, smoothed_confidence = self.smooth_prediction(predicted_label, float(confidence))
-
-            return smoothed_emotion, smoothed_confidence
-
-        except Exception as e:
-            print(f"Prediction error: {e}")
-            print(f"Frame shape: {frame.shape if hasattr(frame, 'shape') else 'No shape'}")
-            print(f"Model input shape: {self.model.input_shape}")
-            return "Error", 0.0
-
-    def detect_faces(self, frame):
-        """Detect faces in the frame using multiple cascades for better pet detection"""
+    def detect_pet_face(self, frame):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        for name, cascade in self.face_cascades:
+            if cascade.empty(): continue
+            # Detect faces
+            faces = cascade.detectMultiScale(gray, 1.1, 5, minSize=(50, 50))
+            if len(faces) > 0:
+                return faces # Returns first found type
+        return []
 
-        all_faces = []
-
-        # Try each cascade with different parameters
-        for cascade_name, cascade in self.face_cascades:
-            # Different scale factors and min neighbors for better detection
-            scale_factors = [1.05, 1.1, 1.2, 1.3]  # More conservative scaling
-            min_neighbors_list = [3, 4, 5]  # Fewer false positives
-
-            for scale_factor in scale_factors:
-                for min_neighbors in min_neighbors_list:
-                    try:
-                        detected_faces = cascade.detectMultiScale(
-                            gray,
-                            scaleFactor=scale_factor,
-                            minNeighbors=min_neighbors,
-                            minSize=(30, 30),  # Minimum face size
-                            maxSize=(300, 300)  # Maximum face size
-                        )
-                        if len(detected_faces) > 0:
-                            # Add cascade name for debugging
-                            faces_with_label = [(x, y, w, h, cascade_name) for x, y, w, h in detected_faces]
-                            all_faces.extend(faces_with_label)
-                    except Exception as e:
-                        print(f"Error with {cascade_name} cascade: {e}")
-
-        # Extract just the bounding boxes for processing
-        faces = [(x, y, w, h) for x, y, w, h, _ in all_faces] if all_faces else []
-
-        # Remove duplicates (overlapping detections)
-        if faces:
-            # Simple non-maximum suppression
-            faces = self._non_max_suppression(faces, 0.3)
-
-        return faces
-
-    def _non_max_suppression(self, boxes, overlap_thresh):
-        """Apply non-maximum suppression to remove overlapping boxes"""
-        if len(boxes) == 0:
-            return []
-
-        # Convert to numpy array
-        boxes = np.array(boxes)
-
-        # Initialize the list of picked indexes
-        pick = []
-
-        # Grab the coordinates of the bounding boxes
-        x1 = boxes[:, 0]
-        y1 = boxes[:, 1]
-        x2 = boxes[:, 0] + boxes[:, 2]
-        y2 = boxes[:, 1] + boxes[:, 3]
-
-        # Compute the area of the bounding boxes
-        area = (x2 - x1 + 1) * (y2 - y1 + 1)
-
-        # Sort the bounding boxes by the bottom-right y-coordinate
-        idxs = np.argsort(y2)
-
-        while len(idxs) > 0:
-            # Grab the last index in the indexes list and add the index value to the list of picked indexes
-            last = len(idxs) - 1
-            i = idxs[last]
-            pick.append(i)
-
-            # Find the largest (x, y) coordinates for the start of the bounding box and the smallest (x, y) coordinates for the end of the bounding box
-            xx1 = np.maximum(x1[i], x1[idxs[:last]])
-            yy1 = np.maximum(y1[i], y1[idxs[:last]])
-            xx2 = np.minimum(x2[i], x2[idxs[:last]])
-            yy2 = np.minimum(y2[i], y2[idxs[:last]])
-
-            # Compute the width and height of the bounding box
-            w = np.maximum(0, xx2 - xx1 + 1)
-            h = np.maximum(0, yy2 - yy1 + 1)
-
-            # Compute the ratio of overlap
-            overlap = (w * h) / area[idxs[:last]]
-
-            # Delete all indexes from the index list that have overlap greater than the provided overlap threshold
-            idxs = np.delete(idxs, np.concatenate(([last], np.where(overlap > overlap_thresh)[0])))
-
-        # Return only the bounding boxes that were picked
-        return boxes[pick].tolist()
-
-    def draw_results(self, frame, faces, emotion, confidence):
-        """Draw detection results on frame"""
-        for (x, y, w, h) in faces:
-            # Draw rectangle around face
-            color = (0, 255, 0) if confidence > self.confidence_threshold else (0, 165, 255)
-            cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
-
-            # Add emotion label
-            label = f"{emotion}: {confidence:.2f}"
-            cv2.putText(frame, label, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
-
-        return frame
-
-    def run_realtime_recognition(self):
-        """Run real-time emotion recognition"""
-        print("🎬 Starting real-time recognition...")
-        print("📹 Opening camera...")
-
-        # Open webcam
+    def run(self):
         cap = cv2.VideoCapture(0)
-
         if not cap.isOpened():
-            print("❌ Error: Could not open camera")
+            print("❌ Camera not found")
             return
-
-        print("✅ Camera opened successfully!")
-        print("🎯 Instructions:")
-        print("   - Press 'q' to quit")
-        print("   - Press 'c' to capture screenshot")
-        print("   - Press 's' to save current frame")
-
-        fps_counter = 0
-        fps_start_time = time.time()
 
         while True:
             ret, frame = cap.read()
-            if not ret:
-                print("❌ Error: Could not read frame")
-                break
-
-            # Flip frame horizontally for mirror effect
+            if not ret: break
             frame = cv2.flip(frame, 1)
+            self.frame_count += 1
 
-            # Detect faces
-            faces = self.detect_faces(frame)
+            # Only process every Nth frame to save CPU/GPU
+            if self.frame_count % self.frame_skip == 0:
+                faces = self.detect_pet_face(frame)
+                self.last_faces = faces
 
-            # Predict emotion (use whole frame if no faces detected)
-            if len(faces) > 0:
-                # Use the largest face detected
-                largest_face = max(faces, key=lambda f: f[2] * f[3])
-                x, y, w, h = largest_face
-                face_roi = frame[y:y+h, x:x+w]
-                emotion, confidence = self.predict_emotion(face_roi)
-            else:
-                # Use whole frame if no faces detected
-                emotion, confidence = self.predict_emotion(frame)
+                if len(faces) > 0:
+                    # Get the largest detected face
+                    (x, y, w, h) = max(faces, key=lambda b: b[2] * b[3])
+                    
+                    # Add 10% padding so we don't cut off ears/chin
+                    pad_w, pad_h = int(w*0.1), int(h*0.1)
+                    y1, y2 = max(0, y-pad_h), min(frame.shape[0], y+h+pad_h)
+                    x1, x2 = max(0, x-pad_w), min(frame.shape[1], x+w+pad_w)
+                    
+                    roi = frame[y1:y2, x1:x2]
+                    
+                    # Predict
+                    processed = self.preprocess_roi(roi)
+                    preds = self.model.predict(processed, verbose=0)[0]
+                    idx = np.argmax(preds)
+                    
+                    self.last_emotion = self.class_labels[idx]
+                    self.last_confidence = preds[idx]
+                else:
+                    self.last_emotion = "No Face"
+                    self.last_confidence = 0.0
 
-            # Draw results
-            frame = self.draw_results(frame, faces, emotion, confidence)
+            # --- Drawing Logic ---
+            display_frame = frame.copy()
+            for (x, y, w, h) in self.last_faces:
+                color = (0, 255, 0) if self.last_confidence > 0.6 else (0, 165, 255)
+                cv2.rectangle(display_frame, (x, y), (x+w, y+h), color, 2)
+                
+                text = f"{self.last_emotion} ({self.last_confidence:.2f})"
+                cv2.putText(display_frame, text, (x, y-10), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
-            # Calculate and display FPS
-            fps_counter += 1
-            if time.time() - fps_start_time > 1:
-                fps = fps_counter / (time.time() - fps_start_time)
-                fps_counter = 0
-                fps_start_time = time.time()
-                cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            cv2.imshow('Pet Emotion Monitor', display_frame)
 
-            # Display frame
-            cv2.imshow('Pet Emotion Recognition - Real Time', frame)
-
-            # Handle key presses
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord('q'):
-                print("👋 Quitting...")
+            if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
-            elif key == ord('c'):
-                timestamp = time.strftime("%Y%m%d_%H%M%S")
-                filename = f"pet_emotion_capture_{timestamp}.jpg"
-                cv2.imwrite(filename, frame)
-                print(f"📸 Screenshot saved as {filename}")
-            elif key == ord('s'):
-                timestamp = time.strftime("%Y%m%d_%H%M%S")
-                filename = f"pet_emotion_frame_{timestamp}.jpg"
-                cv2.imwrite(filename, frame)
-                print(f"💾 Frame saved as {filename}")
 
-        # Cleanup
         cap.release()
         cv2.destroyAllWindows()
-        print("🧹 Cleanup completed")
-
-def main():
-    """Main function"""
-    print("🐾 Pet Facial Expression Recognition - Real Time")
-    print("=" * 55)
-
-    # Initialize the recognition system
-    recognizer = RealTimePetEmotionRecognition()
-
-    if recognizer.model is None:
-        print("❌ Failed to initialize. Please check model file.")
-        return
-
-    # Run real-time recognition
-    recognizer.run_realtime_recognition()
 
 if __name__ == "__main__":
-    main()
+    app = RealTimePetEmotionRecognition()
+    if app.model:
+        app.run()

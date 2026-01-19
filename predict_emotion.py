@@ -6,7 +6,7 @@ from tensorflow.keras.preprocessing import image
 from tensorflow.keras.applications.efficientnet import preprocess_input
 import matplotlib.pyplot as plt
 
-def predict_pet_emotion(image_path, model_path='efficientnet_pet_emotion_proper.h5'):
+def predict_pet_emotion(image_path, model_path='400epoch_train.h5'):
     """
     Predict pet facial emotion from an image
     """
@@ -20,7 +20,7 @@ def predict_pet_emotion(image_path, model_path='efficientnet_pet_emotion_proper.
 
     # Load and preprocess the image
     try:
-        img = image.load_img(image_path, target_size=(300, 300))
+        img = image.load_img(image_path, target_size=(224, 224))
         img_array = image.img_to_array(img)
         img_array = np.expand_dims(img_array, axis=0)
         img_array = preprocess_input(img_array)

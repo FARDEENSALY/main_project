@@ -73,23 +73,30 @@ print(f"Validation: {len(valid_df)} images")
 print(f"Testing: {len(test_df)} images")
 
 # Create Image Data Generator
-batch_size = 32
-img_size = (300, 300)
+batch_size = 16
+img_size = (224, 224)
 channels = 3
 img_shape = (img_size[0], img_size[1], channels)
 
-# Data generators with proper preprocessing for EfficientNet
-tr_gen = ImageDataGenerator(preprocessing_function=preprocess_input,
-                           rotation_range=20,
-                           width_shift_range=0.1,
-                           height_shift_range=0.1,
-                           shear_range=0.1,
-                           brightness_range=[0.8,1.2],
-                           zoom_range=0.1,
-                           horizontal_flip=True,
-                           fill_mode='nearest')
+# Recommended : use custom function for test data batch size, else we can use normal batch size.
+ts_length = len(test_df)
+test_batch_size = max(sorted([ts_length // n for n in range(1, ts_length + 1) if ts_length%n == 0 and ts_length/n <= 80]))
+test_steps = ts_length // test_batch_size
 
-ts_gen = ImageDataGenerator(preprocessing_function=preprocess_input)
+# This function which will be used in image data generator for data augmentation, it just take the image and return it again.
+def scalar(img):
+    return img
+
+tr_gen = ImageDataGenerator(preprocessing_function=scalar,
+                           rotation_range=40,
+                           width_shift_range=0.2,
+                           height_shift_range=0.2,
+                           brightness_range=[0.4,0.6],
+                           zoom_range=0.3,
+                           horizontal_flip=True,
+                           vertical_flip=True)
+
+ts_gen = ImageDataGenerator(preprocessing_function=scalar)
 
 # Calculate test batch size
 ts_length = len(test_df)
@@ -131,11 +138,9 @@ class_count = len(list(train_gen.class_indices.keys()))
 print(f"Number of classes: {class_count}")
 print(f"Class indices: {train_gen.class_indices}")
 
-# Create pre-trained model
-base_model = tf.keras.applications.efficientnet.EfficientNetB3(include_top=False,
-                                                               weights="imagenet",
-                                                               input_shape=img_shape,
-                                                               pooling='max')
+# create pre-trained model (you will built on pretrained model such as :  efficientnet, VGG , Resnet )
+# we will use efficientnetb5 from EfficientNet family.
+base_model = tf.keras.applications.efficientnet.EfficientNetB5(include_top= False, weights= "imagenet", input_shape= img_shape, pooling= 'max')
 base_model.trainable = False
 
 model = Sequential([
@@ -146,7 +151,7 @@ model = Sequential([
                 activity_regularizer=regularizers.l1(0.006),
                 bias_regularizer=regularizers.l1(0.006),
                 activation='relu'),
-    Dropout(rate=0.3, seed=123),
+    Dropout(rate=0.45, seed=123),
     Dense(class_count, activation='softmax')
 ])
 
@@ -157,45 +162,20 @@ model.summary()
 
 # Define Callbacks
 early_stopping = EarlyStopping(monitor='val_accuracy',
-                               patience=15,
+                               patience=5,
                                restore_best_weights=True,
                                mode='max')
 
-# Custom callback to print metrics after each epoch
-class PrintMetricsCallback(tf.keras.callbacks.Callback):
-    def __init__(self, test_gen, train_gen):
-        super().__init__()
-        self.test_gen = test_gen
-        self.train_gen = train_gen
 
-    def on_epoch_end(self, epoch, logs=None):
-        # Training metrics from logs
-        train_acc = logs.get('accuracy')
-        train_loss = logs.get('loss')
 
-        # Validation metrics from logs
-        val_acc = logs.get('val_accuracy')
-        val_loss = logs.get('val_loss')
+def step_decay(epoch):
+    initial_lrate = 0.001
+    drop = 0.5
+    epochs_drop = 10.0
+    lrate = initial_lrate * math.pow(drop, math.floor((1+epoch)/epochs_drop))
+    return lrate
 
-        # Evaluate on test set
-        test_score = self.model.evaluate(self.test_gen, verbose=0)
-        test_loss = test_score[0]
-        test_acc = test_score[1]
-
-        # Print all metrics
-        print(f"\nEpoch {epoch+1}:")
-        print(f"  Training Loss: {train_loss:.4f}, Training Accuracy: {train_acc:.4f}")
-        print(f"  Validation Loss: {val_loss:.4f}, Validation Accuracy: {val_acc:.4f}")
-        print(f"  Testing Loss: {test_loss:.4f}, Testing Accuracy: {test_acc:.4f}")
-
-# Learning rate scheduler for phase 1
-def lr_schedule_phase1(epoch):
-    lr = 0.001
-    if epoch > 15:
-        lr *= 0.1
-    return lr
-
-lr_scheduler_phase1 = LearningRateScheduler(lr_schedule_phase1)
+lr_scheduler_phase1 = LearningRateScheduler(step_decay)
 
 # Learning rate scheduler for fine-tuning (phase 2)
 def lr_schedule_phase2(epoch):
@@ -219,89 +199,53 @@ callbacks_phase1 = [early_stopping, lr_scheduler_phase1]
 callbacks_phase2 = [early_stopping, lr_scheduler_phase2]
 callbacks_phase3 = [early_stopping, lr_scheduler_phase3]
 
-# Instantiate the print callback
-print_callback = PrintMetricsCallback(test_gen, train_gen)
+# Three-phase training
+print("🚀 Phase 1: Training top layers (50 epochs)...")
 
-# Add the callback to all phases
-callbacks_phase1.append(print_callback)
-callbacks_phase2.append(print_callback)
-callbacks_phase3.append(print_callback)
-
-# Three-phase training: Phase 1 - Train top layers, Phase 2 - Fine-tune base model, Phase 3 - Full fine-tuning
-
-# Phase 1: Train top layers with frozen base model
-print("🚀 Phase 1: Training top layers (30 epochs)...")
-print("Base model is frozen, training only the classification head...")
-
-epochs_phase1 = 50
+epochs_phase1 = 400
 history_phase1 = model.fit(x=train_gen,
                           epochs=epochs_phase1,
                           verbose=1,
                           validation_data=valid_gen,
                           validation_steps=None,
-                          shuffle=False,
-                          callbacks=callbacks_phase1)
+                          shuffle=False,)
 
 print("✅ Phase 1 completed!")
 
-# Phase 2: Fine-tune by unfreezing some base model layers
-print("\n🔧 Phase 2: Fine-tuning base model layers...")
-print("Unfreezing top layers of EfficientNetB5 for fine-tuning...")
-
-# Unfreeze the last 50 layers of the base model for fine-tuning
+print("🔧 Phase 2: Fine-tuning base model layers...")
 base_model.trainable = True
-for layer in base_model.layers[:-50]:
+for layer in base_model.layers[:-20]:  # Freeze all but the last 20 layers
     layer.trainable = False
 
-# Recompile with lower learning rate for fine-tuning
 model.compile(Adamax(learning_rate=1e-5), loss='categorical_crossentropy', metrics=['accuracy'])
 
-print("Model recompiled for fine-tuning with lower learning rate.")
-
-epochs_phase2 = 90  # Total remaining epochs
+epochs_phase2 = 1
 history_phase2 = model.fit(x=train_gen,
                           epochs=epochs_phase2,
                           verbose=1,
                           validation_data=valid_gen,
                           validation_steps=None,
                           shuffle=False,
-                          callbacks=callbacks_phase2)
+                          )
 
-print("✅ Phase 2 (fine-tuning) completed!")
+print("✅ Phase 2 completed!")
 
-# Phase 3: Full fine-tuning of all layers
-print("\n🔧 Phase 3: Full fine-tuning of all model layers...")
-print("Unfreezing all base model layers for complete fine-tuning...")
-
-# Unfreeze all layers for full fine-tuning
+print("🔧 Phase 3: Full fine-tuning of all model layers...")
 base_model.trainable = True
 
-# Recompile with very low learning rate for full fine-tuning
 model.compile(Adamax(learning_rate=1e-6), loss='categorical_crossentropy', metrics=['accuracy'])
 
-print("Model recompiled for full fine-tuning with very low learning rate.")
+epochs_phase3 = 1
+history = model.fit(x=train_gen,
+                   epochs=epochs_phase3,
+                   verbose=1,
+                   validation_data=valid_gen,
+                   validation_steps=None,
+                   shuffle=False,)
 
-epochs_phase3 = 30  # Limited epochs to avoid overfitting
-history_phase3 = model.fit(x=train_gen,
-                          epochs=epochs_phase3,
-                          verbose=1,
-                          validation_data=valid_gen,
-                          validation_steps=None,
-                          shuffle=False,
-                          callbacks=callbacks_phase3)
+print("✅ Phase 3 completed!")
 
-print("✅ Phase 3 (full fine-tuning) completed!")
-
-# Combine histories for plotting
-def combine_histories(hist1, hist2, hist3):
-    combined = {}
-    for key in hist1.history.keys():
-        combined[key] = hist1.history[key] + hist2.history[key] + hist3.history[key]
-    return combined
-
-history = combine_histories(history_phase1, history_phase2, history_phase3)
-
-print("✅ Three-phase training completed!")
+print("✅ Training completed!")
 
 # Evaluate Model
 print("\n📊 Evaluating model performance...")
@@ -342,10 +286,10 @@ print("\nClassification Report:")
 print(classification_report(test_gen.classes, y_pred, target_names=classes))
 
 # Plot training history
-tr_acc = history['accuracy']
-tr_loss = history['loss']
-val_acc = history['val_accuracy']
-val_loss = history['val_loss']
+tr_acc = history.history['accuracy']
+tr_loss = history.history['loss']
+val_acc = history.history['val_accuracy']
+val_loss = history.history['val_loss']
 
 index_loss = np.argmin(val_loss)
 val_lowest = val_loss[index_loss]
@@ -379,7 +323,7 @@ plt.savefig('training_history.png', dpi=300, bbox_inches='tight')
 print("📈 Training history plot saved as 'training_history.png'")
 
 # Save the Model
-model.save('efficientnet_pet_emotion_proper.h5')
+model.save('400epoch_train.h5')
 print("💾 Model saved as 'efficientnet_pet_emotion_proper.h5'")
 
 print("\n🎉 Training and evaluation completed!")
